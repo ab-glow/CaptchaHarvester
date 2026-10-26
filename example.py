@@ -10,7 +10,7 @@ from harvester import Harvester
 logging.getLogger('harvester').setLevel(logging.CRITICAL)
 
 # first we create a harvester instance
-harvester = Harvester()
+harvester = Harvester(do_not_track=True)
 """
 if we wanted it to run on another host/port:
 harvester = Harvester('0.0.0.0', 7777)
@@ -19,9 +19,9 @@ harvester = Harvester('0.0.0.0', 7777)
 
 then we add an intercepter
 """
-tokens = harvester.intercept_hcaptcha(
-    domain='www.sneakersnstuff.com',
-    sitekey='33f96e6a-38cd-421b-bb68-7806e1764460')
+tokens = harvester.intercept_recaptcha_v2(
+    domain='nopecha.com',
+    sitekey='6LceNg8jAAAAABkt_mPrc03HfJJNUSy3LvRO6r-P')
 """
 we can also intercept recaptchas!
     tokens = harvester.intercept_recaptcha_v2(domain, sitekey)
@@ -48,7 +48,7 @@ server_thread.start()
 harvester.launch_browser()
 """
 there are a bunch of extra arguments you can pass to tune things exactly how you want then:
-    browser: Union[browserModule.BrowserEnum, str] = browserModule.BrowserEnum.CHROME 
+    browser: Union[browserModule.BrowserEnum, str] = browserModule.BrowserEnum.CHROME
     restart: bool = False
     width: int = 400
     height: int = 580

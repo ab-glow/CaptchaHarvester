@@ -1,11 +1,10 @@
-import cgi
 import json
 import logging
 import re
 import shutil
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from getpass import getuser
 from hashlib import md5
@@ -55,7 +54,8 @@ class MITMRecord:
     kind: CaptchaKindEnum
     sitekey: str
     data_action: str
-    tokens: 'ExpiringQueue[str]' = ExpiringQueue(110)
+    # default_factory gives every intercepted domain its own queue
+    tokens: 'ExpiringQueue[str]' = field(default_factory=lambda: ExpiringQueue(110))
 
 
 # support for pyarmor/pyinstaller
@@ -63,7 +63,7 @@ __dir__ = path.join(getattr(sys, '_MEIPASS'), 'harvester', 'server') if getattr(
     sys, '_MEIPASS', None) else path.abspath(path.dirname(__file__))
 
 
-def ProxyHTTPRequestHandlerWrapper(domain_cache: Dict[str, MITMRecord] = {}, do_not_track=False):
+def ProxyHTTPRequestHandlerWrapper(domain_cache: Dict[str, MITMRecord] = {}, do_not_track=True):
     class ProxyHTTPRequestHandler(BaseHTTPRequestHandler):
         config: MITMRecord
         domain: str
@@ -79,16 +79,20 @@ def ProxyHTTPRequestHandlerWrapper(domain_cache: Dict[str, MITMRecord] = {}, do_
             self.wfile.write(self._load_template(file, **args).encode('utf-8'))
 
         def _find_config(self):
-            self.domain = self.headers.get('host', None)
+            # browsers include the port in the host header (e.g. example.com:5000)
+            self.domain = self.headers.get('host', '').split(':', 1)[0]
             self.config = domain_cache.get(self.domain, None)
             if not self.config:
-                self.domain, path = self.path.strip('/').split('/', 1)
-                self.path = '/' + path
+                self.domain, _, path_part = self.path.lstrip('/').partition('/')
+                self.path = '/' + path_part
                 self.config = domain_cache.get(self.domain, None)
                 if not self.config:
-                    self.send_error(404, 'Not intercepted',
-                                    'This either happend because you are trying to solve captchas on localhost or you didn\'t configure the'
-                                    ' harvester to harvest on the domain you are trying to access the harvester through.')
+                    self.send_error(
+                        404,
+                        'Not intercepted',
+                        'This either happend because you are trying to solve captchas on localhost or you didn\'t configure the'
+                        ' harvester to harvest on the domain you are trying to access the harvester through.'
+                    )
                     return False
             return True
 
@@ -99,7 +103,10 @@ def ProxyHTTPRequestHandlerWrapper(domain_cache: Dict[str, MITMRecord] = {}, do_
 
         def do_CONNECT(self):
             self.send_error(
-                500, "Yuck! hTtPs", 'Make sure to use http:// not https:// when accessing the host though the proxy server')
+                500,
+                "Yuck! hTtPs",
+                'Make sure to use http:// not https:// when accessing the host though the proxy server'
+            )
 
         def do_GET(self):
             if self.path == '/favicon.ico':
@@ -138,27 +145,34 @@ def ProxyHTTPRequestHandlerWrapper(domain_cache: Dict[str, MITMRecord] = {}, do_
                     )
                     if method == 'POST':
                         ga_config['post_token_submit'] = 'true'
-                        form = cgi.FieldStorage(
-                            fp=self.rfile,
-                            headers=self.headers,
-                            environ={
-                                'REQUEST_METHOD': 'POST',
-                                'CONTENT_TYPE': self.headers['Content-Type'],
-                            }
+
+                        # Read raw POST body
+                        content_length = int(self.headers.get("Content-Length", 0))
+                        raw_body = self.rfile.read(content_length).decode("utf-8")
+
+                        # Parse URL-encoded form data
+                        form_data = parse.parse_qs(raw_body)
+
+                        # Extract token from h-captcha or reCAPTCHA field
+                        token = (
+                            form_data.get("h-captcha-response", [None])[0]
+                            or form_data.get("g-recaptcha-response", [None])[0]
                         )
-                        token = form.getvalue(
-                            'h-captcha-response') or form.getvalue('g-recaptcha-response')
+
                         if token:
                             ga_config['token_submit_success'] = '1'
                             self.config.tokens.put(token)
+
                     self._simple_headers(200, 'text/html; charset=utf-8')
 
                     html_config = dict(
                         domain=self.domain,
                         sitekey=self.config.sitekey,
-                        server=f"http://{host}:{port}")
+                        server=f"http://{host}:{port}"
+                    )
 
-                    html_config['script.ga.js'] = self._load_template(
+                    # leave the analytics script out entirely so nothing is sent to google
+                    html_config['script.ga.js'] = '' if do_not_track else self._load_template(
                         'ga.chunk.html', **ga_config)
 
                     if self.config.kind == CaptchaKindEnum.RECAPTCHA_V3:
@@ -173,7 +187,10 @@ def ProxyHTTPRequestHandlerWrapper(domain_cache: Dict[str, MITMRecord] = {}, do_
                 elif self.path.startswith('/token'):
                     if self.config.tokens.empty():
                         self.send_error(
-                            418, "I am a teapot and I have no tokens right now", 'Any attempt to brew coffee with a teapot should result in the error code "418 I\'m a teapot"')
+                            418,
+                            "I am a teapot and I have no tokens right now",
+                            'Any attempt to brew coffee with a teapot should result in the error code "418 I\'m a teapot"'
+                        )
                     else:
                         self._simple_headers(200, 'text/plain; charset=utf-8')
                         self.wfile.write(
@@ -194,7 +211,7 @@ def ProxyHTTPRequestHandlerWrapper(domain_cache: Dict[str, MITMRecord] = {}, do_
 
 
 class Harvester(object):
-    def __init__(self, host='127.0.0.1', port=5000, do_not_track=False):
+    def __init__(self, host='127.0.0.1', port=5000, do_not_track=True):
         self.domain_cache: Dict[str, MITMRecord] = {}
         self.httpd = ThreadingHTTPServer(
             (host, port), ProxyHTTPRequestHandlerWrapper(self.domain_cache, do_not_track))
@@ -210,8 +227,17 @@ class Harvester(object):
     def launch_browser(self, browser: Union[browserModule.BrowserEnum, str] = browserModule.BrowserEnum.CHROME,
                        restart: bool = False, width: int = 400, height: int = 580, args: List[str] = [],
                        extensions: str = None, verbose: bool = False):
-        return browserModule.launch(list(self.domain_cache.keys()),
-                                    self.httpd.server_address, browser, restart, width, height, args, extensions, verbose)
+        return browserModule.launch(
+            list(self.domain_cache.keys()),
+            self.httpd.server_address,
+            browser,
+            restart,
+            width,
+            height,
+            args,
+            extensions,
+            verbose
+        )
 
     def get_token_queue(self, domain):
         return self.domain_cache[domain].tokens

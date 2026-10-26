@@ -132,8 +132,9 @@ def launch(domain: Union[str, List[str]], server_address: Tuple[str, int], brows
                 raise RuntimeError('Can not automatically restart your browser on your system.\n'
                                    '(Psst! Open an issue if you\'d like to see this functionality in the future.'
                                    )
-        raise RuntimeError(
-            'Cannot restart browser when passing path as browser parameter.')
+        else:
+            raise RuntimeError(
+                'Cannot restart browser when passing path as browser parameter.')
     else:
         browser_command.append(user_data_dir)
 
